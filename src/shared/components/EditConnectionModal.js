@@ -28,6 +28,8 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
   const [validating, setValidating] = useState(false);
   const [validationResult, setValidationResult] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [allowedModels, setAllowedModels] = useState(null);
+  const [codexModels, setCodexModels] = useState([]);
 
   useEffect(() => {
     if (connection) {
@@ -56,6 +58,13 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
       }
       setTestResult(null);
       setValidationResult(null);
+      setAllowedModels(Array.isArray(connection.allowedModels) && connection.allowedModels.length ? connection.allowedModels : null);
+      if (connection.provider === "codex") {
+        fetch(`/api/providers/${connection.id}/models`)
+          .then((res) => res.ok ? res.json() : { models: [] })
+          .then((data) => setCodexModels(data.models || []))
+          .catch(() => setCodexModels([]));
+      } else setCodexModels([]);
     }
   }, [connection]);
 
@@ -121,6 +130,8 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
         name: formData.name,
         priority: formData.priority,
       };
+      if (connection.provider === "codex") updates.allowedModels = allowedModels;
+
       if (!isOAuth && formData.apiKey) {
         updates.apiKey = formData.apiKey;
         let isValid = validationResult === "success";
@@ -201,6 +212,29 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
           value={formData.priority}
           onChange={(e) => setFormData({ ...formData, priority: Number.parseInt(e.target.value, 10) || 1 })}
         />
+
+        {connection.provider === "codex" && (
+          <div className="rounded-lg border border-border p-3">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input type="checkbox" checked={allowedModels === null} onChange={(e) => setAllowedModels(e.target.checked ? null : [])} />
+              All models
+            </label>
+            <p className="mt-1 text-xs text-text-muted">Leave enabled for legacy behavior. Disable to route this account only selected models.</p>
+            {allowedModels !== null && (
+              <div className="mt-3 max-h-48 space-y-2 overflow-y-auto">
+                {codexModels.map((model) => {
+                  const id = model.id || model;
+                  const checked = allowedModels.includes(id);
+                  return <label key={id} className="flex items-center gap-2 text-sm">
+                    <input type="checkbox" checked={checked} onChange={() => setAllowedModels(checked ? allowedModels.filter((value) => value !== id) : [...allowedModels, id])} />
+                    {model.name || id}
+                  </label>;
+                })}
+                {!codexModels.length && <p className="text-xs text-text-muted">No model catalog available. Save selected model IDs after retrying this dialog.</p>}
+              </div>
+            )}
+          </div>
+        )}
 
         {!isOAuth && (
           <>
