@@ -59,12 +59,19 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
       setTestResult(null);
       setValidationResult(null);
       setAllowedModels(Array.isArray(connection.allowedModels) && connection.allowedModels.length ? connection.allowedModels : null);
-      if (connection.provider === "codex") {
-        fetch(`/api/providers/${connection.id}/models`)
-          .then((res) => res.ok ? res.json() : { models: [] })
-          .then((data) => setCodexModels(data.models || []))
-          .catch(() => setCodexModels([]));
-      } else setCodexModels([]);
+      if (connection.provider !== "codex") {
+        setCodexModels([]);
+        return;
+      }
+
+      const controller = new AbortController();
+      fetch(`/api/providers/${connection.id}/models`, { signal: controller.signal })
+        .then((res) => res.ok ? res.json() : { models: [] })
+        .then((data) => setCodexModels(data.models || []))
+        .catch((error) => {
+          if (error.name !== "AbortError") setCodexModels([]);
+        });
+      return () => controller.abort();
     }
   }, [connection]);
 
@@ -75,6 +82,10 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
     ? (isOpenAICompatibleProvider(connection.provider) || isAnthropicCompatibleProvider(connection.provider))
     : false;
   const providerRegions = connection ? (AI_PROVIDERS?.[connection.provider]?.regions || null) : null;
+  const displayedCodexModels = [...codexModels];
+  for (const id of allowedModels || []) {
+    if (!displayedCodexModels.some((model) => (model.id || model) === id)) displayedCodexModels.push(id);
+  }
 
   // Build providerSpecificData for region-aware providers
   const buildRegionSpecificData = () => {
@@ -123,7 +134,7 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
   };
 
   const handleSubmit = async () => {
-    if (!connection) return;
+    if (!connection || (connection.provider === "codex" && Array.isArray(allowedModels) && allowedModels.length === 0)) return;
     setSaving(true);
     try {
       const updates = {
@@ -222,7 +233,7 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
             <p className="mt-1 text-xs text-text-muted">Leave enabled for legacy behavior. Disable to route this account only selected models.</p>
             {allowedModels !== null && (
               <div className="mt-3 max-h-48 space-y-2 overflow-y-auto">
-                {codexModels.map((model) => {
+                {displayedCodexModels.map((model) => {
                   const id = model.id || model;
                   const checked = allowedModels.includes(id);
                   return <label key={id} className="flex items-center gap-2 text-sm">
@@ -230,7 +241,7 @@ export default function EditConnectionModal({ isOpen, connection, proxyPools, on
                     {model.name || id}
                   </label>;
                 })}
-                {!codexModels.length && <p className="text-xs text-text-muted">No model catalog available. Save selected model IDs after retrying this dialog.</p>}
+                {!displayedCodexModels.length && <p className="text-xs text-error">Select at least one model.</p>}
               </div>
             )}
           </div>

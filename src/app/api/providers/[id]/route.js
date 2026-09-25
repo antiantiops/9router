@@ -129,10 +129,10 @@ export async function PUT(request, { params }) {
     if (lastErrorAt !== undefined) updateData.lastErrorAt = lastErrorAt;
     if (allowedModels !== undefined) {
       if (existing.provider !== "codex") return NextResponse.json({ error: "Model restrictions are only supported for Codex accounts" }, { status: 400 });
-      if (allowedModels !== null && (!Array.isArray(allowedModels) || allowedModels.some((model) => typeof model !== "string" || !model.trim()))) {
-        return NextResponse.json({ error: "allowedModels must be null or an array of model IDs" }, { status: 400 });
+      if (allowedModels !== null && (!Array.isArray(allowedModels) || allowedModels.length === 0 || allowedModels.some((model) => typeof model !== "string" || !model.trim()))) {
+        return NextResponse.json({ error: "allowedModels must be null or a non-empty array of model IDs" }, { status: 400 });
       }
-      updateData.allowedModels = allowedModels?.length ? [...new Set(allowedModels.map((model) => model.trim()))] : null;
+      updateData.allowedModels = allowedModels === null ? null : [...new Set(allowedModels.map((model) => model.trim()))];
     }
 
     if (
