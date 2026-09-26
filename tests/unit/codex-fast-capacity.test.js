@@ -68,6 +68,26 @@ describe("Codex fast tier and capacity handling", () => {
     expect(peek.message).toContain("configured model is unavailable");
   });
 
+  it("detects unavailable-model error after empty delta (response.failed bypass)", async () => {
+    const executor = new CodexExecutor();
+    const text = [
+      "event: response.output_text.delta",
+      'data: {"type":"response.output_text.delta","delta":""}',
+      "",
+      "event: response.failed",
+      'data: {"error":{"message":"The configured model is unavailable from the provider — it may have been renamed, retired, or is not offered on this account."}}',
+      "",
+    ].join("\n");
+    const response = new Response(streamFromText(text), {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+
+    const peek = await executor._peekSseTransientError(response);
+    expect(peek.accountFallback).toBe(true);
+    expect(peek.message).toContain("configured model is unavailable");
+  });
+
   it("reassembles normal SSE after peeking", async () => {
     const executor = new CodexExecutor();
     const text = [
