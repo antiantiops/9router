@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { CodexExecutor } from "../../open-sse/executors/codex.js";
+import { checkFallbackError } from "../../open-sse/services/accountFallback.js";
 
 function streamFromText(text) {
   const encoder = new TextEncoder();
@@ -34,6 +35,10 @@ describe("Codex fast tier and capacity handling", () => {
     });
 
     expect(headers["ChatGPT-Account-ID"]).toBe("acct_1");
+  });
+
+  it("classifies ChatGPT unsupported-model HTTP 400 as combo fallback", () => {
+    expect(checkFallbackError(400, "The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account.").shouldFallback).toBe(true);
   });
 
   it("classifies 200-SSE model capacity as account fallback", async () => {
