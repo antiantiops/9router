@@ -1,0 +1,10 @@
+import assert from 'node:assert/strict';
+import provider from '../../open-sse/providers/registry/antigravity.js';
+import {parseModel} from '../../open-sse/services/model.js';
+const model=provider.models.find(m=>m.id==='gemini-4-argon');
+assert.equal(model.upstreamModelId,'gemini-4-argon');
+assert.equal(provider.models.filter(m=>m.id==='gemini-4-argon').length,1);
+assert.equal(parseModel('ag/gemini-4-argon').provider,'antigravity');
+assert.equal(parseModel('ag/gemini-4-argon').model,'gemini-4-argon');
+assert.equal(provider.models.find(m=>m.id==='gemini-3.8-flash').upstreamModelId,'gemini-3.8-flash-medium(medium)');
+console.log('PASS Argon registry, alias routing, existing Flash mapping unchanged');
