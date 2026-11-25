@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getSettings: vi.fn(),
   resolveConnectionProxyConfig: vi.fn(),
   getAntigravityUsage: vi.fn(),
+  updateProviderConnection: vi.fn(),
 }));
 
 vi.mock("@/lib/localDb", () => ({
@@ -12,7 +13,7 @@ vi.mock("@/lib/localDb", () => ({
   getSettings: mocks.getSettings,
   getProxyPools: vi.fn(),
   validateApiKey: vi.fn(),
-  updateProviderConnection: vi.fn(),
+  updateProviderConnection: mocks.updateProviderConnection,
 }));
 vi.mock("@/lib/network/connectionProxy", () => ({
   resolveConnectionProxyConfig: mocks.resolveConnectionProxyConfig,
@@ -28,7 +29,7 @@ vi.mock("open-sse/services/usage/google.js", () => ({
 vi.mock("@/sse/utils/logger.js", () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn() }));
 
 const { getAntigravityQuotaCache, handleAntigravityQuotaError, refreshAntigravityQuota, clearAntigravityStrikes } = await import("@/sse/services/antigravityQuota.js");
-const { getProviderCredentials } = await import("@/sse/services/auth.js");
+const { getProviderCredentials, markAccountUnavailable, clearAccountError } = await import("@/sse/services/auth.js");
 
 const MODEL = "claude-opus-4-6-thinking";
 const FUTURE_RESET = "2026-09-01T00:00:00.000Z";
@@ -41,6 +42,40 @@ beforeEach(() => {
 });
 
 describe("Antigravity quota-aware routing", () => {
+  it("blocks chat 403 per pair, doubles within a 24h cycle, and resets after success or the cycle", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const rows = ["a", "b"].map(id => ({ id, provider: "antigravity", isActive: true }));
+    const otherModel = "gemini-other";
+    const minute = 60_000;
+    mocks.getProviderConnections.mockImplementation(async () => rows.map(row => ({ ...row })));
+    mocks.updateProviderConnection.mockImplementation(async (id, patch) => Object.assign(rows.find(row => row.id === id), patch));
+    const deny = (id = "a", model = MODEL) => markAccountUnavailable(id, 403, "HTTP 403", "antigravity", model);
+    try {
+      for (const minutes of [30, 60, 120, 240, 480, 510, 30]) {
+        await expect(deny()).resolves.toEqual({ shouldFallback: true, cooldownMs: minutes * minute });
+        await expect(deny()).resolves.toMatchObject({ cooldownMs: minutes * minute });
+        await expect(getProviderCredentials("antigravity", null, MODEL)).resolves.toMatchObject({ connectionId: "b" });
+        await expect(getProviderCredentials("antigravity", null, otherModel)).resolves.toMatchObject({ connectionId: "a" });
+        vi.setSystemTime(Date.now() + minutes * minute);
+        await expect(getProviderCredentials("antigravity", null, MODEL)).resolves.toMatchObject({ connectionId: "a" });
+      }
+      await deny();
+      await deny("a", otherModel);
+      await deny("b");
+      await expect(getProviderCredentials("antigravity", null, MODEL)).resolves.toMatchObject({ allRateLimited: true, lastErrorCode: 403 });
+      await clearAccountError("a", rows[0], MODEL);
+      await expect(getProviderCredentials("antigravity", null, MODEL)).resolves.toMatchObject({ connectionId: "a" });
+      await expect(getProviderCredentials("antigravity", null, otherModel)).resolves.toMatchObject({ connectionId: "b" });
+      await expect(getProviderCredentials("antigravity", new Set(["a"]), MODEL)).resolves.toMatchObject({ allRateLimited: true });
+      await expect(deny()).resolves.toMatchObject({ cooldownMs: 30 * minute });
+      expect(mocks.getAntigravityUsage).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      mocks.getProviderConnections.mockReset();
+      mocks.updateProviderConnection.mockReset();
+    }
+  });
   it("records exhausted upstream quota after 429 and returns its exact reset time", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-26T00:00:00.000Z"));
