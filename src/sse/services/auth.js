@@ -9,6 +9,15 @@ import * as log from "../utils/logger.js";
 // Mutex to prevent race conditions during account selection
 let selectionMutex = Promise.resolve();
 
+const FORBIDDEN_BASE_MS = 30 * 60 * 1000;
+const FORBIDDEN_CYCLE_MS = 24 * 60 * 60 * 1000;
+const forbiddenKey = (model) => `antigravity403_${model}`;
+
+function forbiddenUntil(connection, model) {
+  const until = connection[forbiddenKey(model)]?.until;
+  return until > Date.now() ? until : null;
+}
+
 const GITHUB_MONTHLY_USAGE_LIMIT = "you've reached your additional usage limit for your plan";
 
 function githubMonthlyResetMs(status, errorText, provider) {
@@ -87,6 +96,7 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
     const availableConnections = connections.filter(c => {
       if (excludeSet.has(c.id)) return false;
       if (isModelLockActive(c, model)) return false;
+      if (isAntigravity && model && forbiddenUntil(c, model)) return false;
       const enabled = c.providerSpecificData?.enabledModels;
       if (providerId === "codex" && Array.isArray(enabled) && enabled.length && requestedModel && !enabled.includes(requestedModel)) return false;
       // Antigravity: skip if live quota exhausted for this model
@@ -116,6 +126,8 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       // Find earliest persistent lock or lazy Antigravity quota-cache reset for retry timing.
       const lockedConns = connections.filter(c => isModelLockActive(c, model));
       const expiries = lockedConns.map(c => getEarliestModelLockUntil(c)).filter(Boolean);
+      const forbiddenConns = isAntigravity && model ? connections.filter(c => forbiddenUntil(c, model)) : [];
+      expiries.push(...forbiddenConns.map(c => new Date(c[forbiddenKey(model)].until).toISOString()));
       if (isAntigravity && model && antigravityQuotaCache) {
         connections.forEach((c) => {
           const connQuotas = antigravityQuotaCache.get(c.id);
@@ -127,13 +139,15 @@ export async function getProviderCredentials(provider, excludeConnectionIds = nu
       const earliest = expiries.sort()[0] || null;
       if (earliest) {
         const earliestConn = lockedConns[0];
-        log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${earliestConn?.lastError?.slice(0, 50)}`);
+        const lastError = earliestConn?.lastError || (forbiddenConns.length ? "HTTP 403" : null);
+        const lastErrorCode = earliestConn?.errorCode ?? (forbiddenConns.length ? 403 : null);
+        log.warn("AUTH", `${provider} | all ${connections.length} accounts locked for ${model || "all"} (${formatRetryAfter(earliest)}) | lastError=${lastError?.slice(0, 50)}`);
         return {
           allRateLimited: true,
           retryAfter: earliest,
           retryAfterHuman: formatRetryAfter(earliest),
-          lastError: earliestConn?.lastError || null,
-          lastErrorCode: earliestConn?.errorCode || null
+          lastError,
+          lastErrorCode
         };
       }
       log.warn("AUTH", `${provider} | all ${connections.length} accounts unavailable`);
@@ -248,6 +262,19 @@ export async function markAccountUnavailable(connectionId, status, errorText, pr
   if (!connectionId || connectionId === "noauth") return { shouldFallback: false, cooldownMs: 0 };
   const connections = await getProviderConnections({ provider });
   const conn = connections.find(c => c.id === connectionId);
+  if (conn && model && status === 403 && resolveProviderId(provider) === "antigravity") {
+    const now = Date.now();
+    const key = forbiddenKey(model);
+    const previous = conn[key];
+    // Requests already in flight must not extend an active block.
+    if (previous?.until > now) return { shouldFallback: true, cooldownMs: previous.until - now };
+    const total = previous?.total < FORBIDDEN_CYCLE_MS ? previous.total : 0;
+    const cooldownMs = Math.min(total + FORBIDDEN_BASE_MS, FORBIDDEN_CYCLE_MS - total);
+    const until = now + cooldownMs;
+    await updateProviderConnection(connectionId, { [key]: { total: total + cooldownMs, until } });
+    log.warn("AUTH", `${connectionId.slice(0, 8)} | FORBIDDEN_BLOCK ${model} until ${new Date(until).toISOString()}`);
+    return { shouldFallback: true, cooldownMs };
+  }
   const backoffLevel = conn?.backoffLevel || 0;
 
   // GitHub premium-request exhaustion is account-wide until the next UTC month.
@@ -308,6 +335,9 @@ export async function clearAccountError(connectionId, currentConnection, model =
   const conn = currentConnection._connection || currentConnection;
   const now = Date.now();
   const allLockKeys = Object.keys(conn).filter(k => k.startsWith("modelLock_"));
+  if (conn.provider === "antigravity" && model && conn[forbiddenKey(model)]) {
+    await updateProviderConnection(connectionId, { [forbiddenKey(model)]: null });
+  }
 
   if (!conn.testStatus && !conn.lastError && allLockKeys.length === 0) return;
 
